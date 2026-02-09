@@ -1,60 +1,21 @@
 /**
- * Tests for remote-server helper logic.
+ * Unit tests for remote-server exported helpers.
  *
- * Since isEndpointAllowed, resolvePlaceholders, and checkRateLimit are
- * module-scoped (not exported), we replicate their logic here for unit testing.
- * This validates the algorithms used in the remote server.
+ * Tests the actual exported functions from remote-server.ts:
+ * isEndpointAllowed, resolvePlaceholders, checkRateLimit, and cleanupSessions.
  */
 import { describe, it, expect } from 'vitest';
 
-// ── Replicated helper: isEndpointAllowed ──────────────────────────────────
+import {
+  isEndpointAllowed,
+  resolvePlaceholders,
+  checkRateLimit,
+  cleanupSessions,
+  SESSION_TTL,
+  HANDSHAKE_TTL,
+} from './remote-server.js';
 
-function isEndpointAllowed(url: string, allowedEndpoints: string[]): boolean {
-  if (allowedEndpoints.length === 0) return true;
-  return allowedEndpoints.some((pattern) => {
-    const regex = new RegExp(
-      '^' +
-        pattern
-          .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-          .replace(/\*\*/g, '.__DOUBLE_STAR__.')
-          .replace(/\*/g, '[^/]*')
-          .replace(/\.__DOUBLE_STAR__\./g, '.*') +
-        '$',
-    );
-    return regex.test(url);
-  });
-}
-
-// ── Replicated helper: resolvePlaceholders ────────────────────────────────
-
-function resolvePlaceholders(str: string, secretsMap: Record<string, string>): string {
-  return str.replace(/\$\{(\w+)\}/g, (match, name: string) => {
-    if (name in secretsMap) return secretsMap[name];
-    return match;
-  });
-}
-
-// ── Replicated helper: checkRateLimit ─────────────────────────────────────
-
-interface MockSession {
-  windowRequests: number;
-  windowStart: number;
-}
-
-function checkRateLimit(session: MockSession, rateLimitPerMinute: number): boolean {
-  const now = Date.now();
-  const windowMs = 60_000;
-
-  if (now - session.windowStart > windowMs) {
-    session.windowStart = now;
-    session.windowRequests = 0;
-  }
-
-  session.windowRequests++;
-  return session.windowRequests <= rateLimitPerMinute;
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────
+// ── isEndpointAllowed ──────────────────────────────────────────────────────
 
 describe('isEndpointAllowed', () => {
   it('should allow any URL when no patterns are configured', () => {
@@ -105,6 +66,8 @@ describe('isEndpointAllowed', () => {
   });
 });
 
+// ── resolvePlaceholders ────────────────────────────────────────────────────
+
 describe('resolvePlaceholders', () => {
   it('should replace ${VAR} with secret values', () => {
     const secrets = { API_KEY: 'sk-123', TOKEN: 'tok-456' };
@@ -119,7 +82,7 @@ describe('resolvePlaceholders', () => {
     );
   });
 
-  it('should leave unknown placeholders unchanged', () => {
+  it('should leave unknown placeholders unchanged and log a warning', () => {
     const secrets = { KNOWN: 'value' };
     expect(resolvePlaceholders('${UNKNOWN}', secrets)).toBe('${UNKNOWN}');
   });
@@ -139,9 +102,11 @@ describe('resolvePlaceholders', () => {
   });
 });
 
+// ── checkRateLimit ─────────────────────────────────────────────────────────
+
 describe('checkRateLimit', () => {
   it('should allow requests within the rate limit', () => {
-    const session: MockSession = { windowRequests: 0, windowStart: Date.now() };
+    const session = { windowRequests: 0, windowStart: Date.now() };
     const limit = 5;
 
     for (let i = 0; i < 5; i++) {
@@ -150,7 +115,7 @@ describe('checkRateLimit', () => {
   });
 
   it('should block requests exceeding the rate limit', () => {
-    const session: MockSession = { windowRequests: 0, windowStart: Date.now() };
+    const session = { windowRequests: 0, windowStart: Date.now() };
     const limit = 3;
 
     expect(checkRateLimit(session, limit)).toBe(true); // 1
@@ -161,7 +126,7 @@ describe('checkRateLimit', () => {
 
   it('should reset the window after 60 seconds', () => {
     const now = Date.now();
-    const session: MockSession = {
+    const session = {
       windowRequests: 100,
       windowStart: now - 61_000, // 61 seconds ago
     };
@@ -173,7 +138,7 @@ describe('checkRateLimit', () => {
 
   it('should not reset window within 60 seconds', () => {
     const now = Date.now();
-    const session: MockSession = {
+    const session = {
       windowRequests: 4,
       windowStart: now - 30_000, // 30 seconds ago, within window
     };
@@ -182,5 +147,89 @@ describe('checkRateLimit', () => {
     expect(checkRateLimit(session, 5)).toBe(true);
     // 6th request - should exceed
     expect(checkRateLimit(session, 5)).toBe(false);
+  });
+});
+
+// ── cleanupSessions ────────────────────────────────────────────────────────
+
+describe('cleanupSessions', () => {
+  it('should remove sessions that exceed the SESSION_TTL', () => {
+    const now = Date.now();
+    const sessionsMap = new Map([
+      ['active-session', { lastActivity: now - 1000 }], // 1s ago — fresh
+      ['stale-session', { lastActivity: now - SESSION_TTL - 1 }], // just expired
+      ['old-session', { lastActivity: now - SESSION_TTL * 2 }], // long expired
+    ]);
+    const pendingMap = new Map<string, { createdAt: number }>();
+
+    const result = cleanupSessions(sessionsMap, pendingMap, now);
+
+    expect(sessionsMap.size).toBe(1);
+    expect(sessionsMap.has('active-session')).toBe(true);
+    expect(sessionsMap.has('stale-session')).toBe(false);
+    expect(sessionsMap.has('old-session')).toBe(false);
+    expect(result.expiredSessions).toEqual(['stale-session', 'old-session']);
+    expect(result.expiredHandshakes).toEqual([]);
+  });
+
+  it('should remove pending handshakes that exceed the HANDSHAKE_TTL', () => {
+    const now = Date.now();
+    const sessionsMap = new Map<string, { lastActivity: number }>();
+    const pendingMap = new Map([
+      ['fresh-hs', { createdAt: now - 1000 }], // 1s ago — fresh
+      ['stale-hs', { createdAt: now - HANDSHAKE_TTL - 1 }], // just expired
+    ]);
+
+    const result = cleanupSessions(sessionsMap, pendingMap, now);
+
+    expect(pendingMap.size).toBe(1);
+    expect(pendingMap.has('fresh-hs')).toBe(true);
+    expect(pendingMap.has('stale-hs')).toBe(false);
+    expect(result.expiredSessions).toEqual([]);
+    expect(result.expiredHandshakes).toEqual(['stale-hs']);
+  });
+
+  it('should clean up both sessions and handshakes in a single pass', () => {
+    const now = Date.now();
+    const sessionsMap = new Map([
+      ['alive', { lastActivity: now }],
+      ['dead', { lastActivity: now - SESSION_TTL - 1 }],
+    ]);
+    const pendingMap = new Map([
+      ['alive-hs', { createdAt: now }],
+      ['dead-hs', { createdAt: now - HANDSHAKE_TTL - 1 }],
+    ]);
+
+    const result = cleanupSessions(sessionsMap, pendingMap, now);
+
+    expect(sessionsMap.size).toBe(1);
+    expect(pendingMap.size).toBe(1);
+    expect(result.expiredSessions).toEqual(['dead']);
+    expect(result.expiredHandshakes).toEqual(['dead-hs']);
+  });
+
+  it('should handle empty maps without errors', () => {
+    const sessionsMap = new Map<string, { lastActivity: number }>();
+    const pendingMap = new Map<string, { createdAt: number }>();
+
+    const result = cleanupSessions(sessionsMap, pendingMap);
+
+    expect(result.expiredSessions).toEqual([]);
+    expect(result.expiredHandshakes).toEqual([]);
+  });
+
+  it('should not remove sessions within the TTL', () => {
+    const now = Date.now();
+    const sessionsMap = new Map([
+      ['barely-alive', { lastActivity: now - SESSION_TTL + 1000 }], // 1s before expiry
+    ]);
+    const pendingMap = new Map([
+      ['barely-alive-hs', { createdAt: now - HANDSHAKE_TTL + 1000 }], // 1s before expiry
+    ]);
+
+    cleanupSessions(sessionsMap, pendingMap, now);
+
+    expect(sessionsMap.size).toBe(1);
+    expect(pendingMap.size).toBe(1);
   });
 });

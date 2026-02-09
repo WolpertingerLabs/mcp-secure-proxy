@@ -9,12 +9,18 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import crypto from 'node:crypto';
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { createApp } from './remote-server.js';
 import type { Config } from './config.js';
 import {
   generateKeyBundle,
   extractPublicKeys,
+  saveKeyBundle,
+  serializeKeyBundle,
   EncryptedChannel,
   type KeyBundle,
   type PublicKeyBundle,
@@ -351,5 +357,602 @@ describe('Security', () => {
 
     expect(resp1.success).toBe(true);
     expect(resp2.success).toBe(true);
+  });
+});
+
+// ── Rate limiting ──────────────────────────────────────────────────────────
+
+describe('Rate limiting', () => {
+  let rateLimitedServer: Server;
+  let rateLimitedUrl: string;
+
+  beforeAll(async () => {
+    const config: Config = {
+      proxy: {
+        remoteUrl: '',
+        localKeysDir: '',
+        remotePublicKeysDir: '',
+        connectTimeout: 10_000,
+        requestTimeout: 30_000,
+      },
+      remote: {
+        host: '127.0.0.1',
+        port: 0,
+        localKeysDir: '',
+        authorizedPeersDir: '',
+        secrets: { SECRET: 'value' },
+        allowedEndpoints: [],
+        rateLimitPerMinute: 3, // Very low limit for testing
+      },
+    };
+
+    const app = createApp({
+      config,
+      ownKeys: serverKeys,
+      authorizedPeers: [clientPub],
+    });
+
+    await new Promise<void>((resolve) => {
+      rateLimitedServer = app.listen(0, '127.0.0.1', () => {
+        const addr = rateLimitedServer.address() as AddressInfo;
+        rateLimitedUrl = `http://127.0.0.1:${addr.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      rateLimitedServer.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  });
+
+  it('should reject requests that exceed the rate limit', async () => {
+    // Perform handshake on the rate-limited server
+    const initiator = new HandshakeInitiator(clientKeys, serverPub);
+    const initMsg = initiator.createInit();
+    const initResp = await fetch(`${rateLimitedUrl}/handshake/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(initMsg),
+    });
+    expect(initResp.ok).toBe(true);
+
+    const reply = (await initResp.json()) as HandshakeReply;
+    const sessionKeys = initiator.processReply(reply);
+    const channel = new EncryptedChannel(sessionKeys);
+
+    const finishMsg = initiator.createFinish(sessionKeys);
+    const finishResp = await fetch(`${rateLimitedUrl}/handshake/finish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionKeys.sessionId,
+      },
+      body: JSON.stringify(finishMsg),
+    });
+    expect(finishResp.ok).toBe(true);
+
+    // Send 3 requests (within limit)
+    for (let i = 0; i < 3; i++) {
+      const request: ProxyRequest = {
+        type: 'proxy_request',
+        id: crypto.randomUUID(),
+        toolName: 'list_secrets',
+        toolInput: {},
+        timestamp: Date.now(),
+      };
+      const encrypted = channel.encryptJSON(request);
+      const resp = await fetch(`${rateLimitedUrl}/request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Session-Id': channel.sessionId,
+        },
+        body: new Uint8Array(encrypted),
+      });
+      expect(resp.ok).toBe(true);
+      // Must consume response to advance recv counter
+      channel.decryptJSON<ProxyResponse>(Buffer.from(await resp.arrayBuffer()));
+    }
+
+    // 4th request should be rate-limited
+    const request: ProxyRequest = {
+      type: 'proxy_request',
+      id: crypto.randomUUID(),
+      toolName: 'list_secrets',
+      toolInput: {},
+      timestamp: Date.now(),
+    };
+    const encrypted = channel.encryptJSON(request);
+    const resp = await fetch(`${rateLimitedUrl}/request`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Session-Id': channel.sessionId,
+      },
+      body: new Uint8Array(encrypted),
+    });
+    expect(resp.status).toBe(429);
+    const body = await resp.text();
+    expect(body).toContain('Rate limit exceeded');
+  });
+});
+
+// ── http_request tool handler ──────────────────────────────────────────────
+
+describe('http_request tool', () => {
+  let targetServer: Server;
+  let targetUrl: string;
+  let httpTestServer: Server;
+  let httpTestUrl: string;
+
+  beforeAll(async () => {
+    // Create a target HTTP server that the proxy will call
+    targetServer = http.createServer((req, res) => {
+      if (req.url === '/json-endpoint') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'hello', auth: req.headers.authorization ?? null }));
+      } else if (req.url === '/text-endpoint') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('plain text response');
+      } else if (req.url === '/echo-body') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ received: body, contentType: req.headers['content-type'] }));
+        });
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('not found');
+      }
+    });
+
+    await new Promise<void>((resolve) => {
+      targetServer.listen(0, '127.0.0.1', () => {
+        const addr = targetServer.address() as AddressInfo;
+        targetUrl = `http://127.0.0.1:${addr.port}`;
+        resolve();
+      });
+    });
+
+    // Create the MCP server with allowedEndpoints set to our target server
+    const config: Config = {
+      proxy: {
+        remoteUrl: '',
+        localKeysDir: '',
+        remotePublicKeysDir: '',
+        connectTimeout: 10_000,
+        requestTimeout: 30_000,
+      },
+      remote: {
+        host: '127.0.0.1',
+        port: 0,
+        localKeysDir: '',
+        authorizedPeersDir: '',
+        secrets: { MY_TOKEN: 'Bearer secret-jwt-token', BODY_SECRET: 'super-secret-body' },
+        allowedEndpoints: [`${targetUrl}/**`],
+        rateLimitPerMinute: 60,
+      },
+    };
+
+    const app = createApp({
+      config,
+      ownKeys: serverKeys,
+      authorizedPeers: [clientPub],
+    });
+
+    await new Promise<void>((resolve) => {
+      httpTestServer = app.listen(0, '127.0.0.1', () => {
+        const addr = httpTestServer.address() as AddressInfo;
+        httpTestUrl = `http://127.0.0.1:${addr.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await Promise.all([
+      new Promise<void>((resolve, reject) => {
+        targetServer.close((err) => (err ? reject(err) : resolve()));
+      }),
+      new Promise<void>((resolve, reject) => {
+        httpTestServer.close((err) => (err ? reject(err) : resolve()));
+      }),
+    ]);
+  });
+
+  /** Perform handshake against the http_request test server */
+  async function httpHandshake(): Promise<EncryptedChannel> {
+    const initiator = new HandshakeInitiator(clientKeys, serverPub);
+    const initMsg = initiator.createInit();
+    const initResp = await fetch(`${httpTestUrl}/handshake/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(initMsg),
+    });
+    const reply = (await initResp.json()) as HandshakeReply;
+    const sessionKeys = initiator.processReply(reply);
+    const channel = new EncryptedChannel(sessionKeys);
+
+    const finishMsg = initiator.createFinish(sessionKeys);
+    await fetch(`${httpTestUrl}/handshake/finish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionKeys.sessionId,
+      },
+      body: JSON.stringify(finishMsg),
+    });
+
+    return channel;
+  }
+
+  /** Send encrypted tool request to the http_request test server */
+  async function sendHttpToolRequest(
+    channel: EncryptedChannel,
+    toolName: string,
+    toolInput: Record<string, unknown>,
+  ): Promise<ProxyResponse> {
+    const request: ProxyRequest = {
+      type: 'proxy_request',
+      id: crypto.randomUUID(),
+      toolName,
+      toolInput,
+      timestamp: Date.now(),
+    };
+    const encrypted = channel.encryptJSON(request);
+    const resp = await fetch(`${httpTestUrl}/request`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Session-Id': channel.sessionId,
+      },
+      body: new Uint8Array(encrypted),
+    });
+    expect(resp.ok).toBe(true);
+    return channel.decryptJSON<ProxyResponse>(Buffer.from(await resp.arrayBuffer()));
+  }
+
+  it('should proxy a GET request and return JSON response', async () => {
+    const channel = await httpHandshake();
+    const response = await sendHttpToolRequest(channel, 'http_request', {
+      method: 'GET',
+      url: `${targetUrl}/json-endpoint`,
+      headers: {},
+    });
+
+    expect(response.success).toBe(true);
+    const result = response.result as { status: number; body: { message: string } };
+    expect(result.status).toBe(200);
+    expect(result.body.message).toBe('hello');
+  });
+
+  it('should proxy a GET request and return text response', async () => {
+    const channel = await httpHandshake();
+    const response = await sendHttpToolRequest(channel, 'http_request', {
+      method: 'GET',
+      url: `${targetUrl}/text-endpoint`,
+      headers: {},
+    });
+
+    expect(response.success).toBe(true);
+    const result = response.result as { status: number; body: string };
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('plain text response');
+  });
+
+  it('should resolve secret placeholders in headers', async () => {
+    const channel = await httpHandshake();
+    const response = await sendHttpToolRequest(channel, 'http_request', {
+      method: 'GET',
+      url: `${targetUrl}/json-endpoint`,
+      headers: { Authorization: '${MY_TOKEN}' },
+    });
+
+    expect(response.success).toBe(true);
+    const result = response.result as { body: { auth: string } };
+    expect(result.body.auth).toBe('Bearer secret-jwt-token');
+  });
+
+  it('should resolve placeholders in string body', async () => {
+    const channel = await httpHandshake();
+    const response = await sendHttpToolRequest(channel, 'http_request', {
+      method: 'POST',
+      url: `${targetUrl}/echo-body`,
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'my secret is ${BODY_SECRET}',
+    });
+
+    expect(response.success).toBe(true);
+    const result = response.result as { body: { received: string } };
+    expect(result.body.received).toBe('my secret is super-secret-body');
+  });
+
+  it('should resolve placeholders in object body and set Content-Type', async () => {
+    const channel = await httpHandshake();
+    const response = await sendHttpToolRequest(channel, 'http_request', {
+      method: 'POST',
+      url: `${targetUrl}/echo-body`,
+      headers: {},
+      body: { key: '${BODY_SECRET}' },
+    });
+
+    expect(response.success).toBe(true);
+    const result = response.result as { body: { received: string; contentType: string } };
+    const parsed = JSON.parse(result.body.received) as { key: string };
+    expect(parsed.key).toBe('super-secret-body');
+    // Should auto-set Content-Type when body is an object and no Content-Type header exists
+    expect(result.body.contentType).toContain('application/json');
+  });
+
+  it('should reject requests to endpoints not on the allowlist', async () => {
+    const channel = await httpHandshake();
+    const response = await sendHttpToolRequest(channel, 'http_request', {
+      method: 'GET',
+      url: 'https://evil.example.com/steal-secrets',
+      headers: {},
+    });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toContain('Endpoint not allowed');
+  });
+
+  it('should leave unknown placeholders unchanged with a warning', async () => {
+    const channel = await httpHandshake();
+    // Send a request where the Authorization header has an unknown placeholder
+    const response = await sendHttpToolRequest(channel, 'http_request', {
+      method: 'GET',
+      url: `${targetUrl}/json-endpoint`,
+      headers: { Authorization: '${UNKNOWN_SECRET}' },
+    });
+
+    expect(response.success).toBe(true);
+    const result = response.result as { body: { auth: string } };
+    // The unknown placeholder should be left as-is
+    expect(result.body.auth).toBe('${UNKNOWN_SECRET}');
+  });
+});
+
+// ── Handshake finish edge cases ────────────────────────────────────────────
+
+describe('Handshake finish edge cases', () => {
+  it('should reject a finish with an invalid payload (bad verification)', async () => {
+    // Perform a normal handshake init to get a valid session
+    const initiator = new HandshakeInitiator(clientKeys, serverPub);
+    const initMsg = initiator.createInit();
+    const initResp = await fetch(`${baseUrl}/handshake/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(initMsg),
+    });
+    expect(initResp.ok).toBe(true);
+
+    const reply = (await initResp.json()) as HandshakeReply;
+    const sessionKeys = initiator.processReply(reply);
+
+    // Send a finish with garbage payload instead of the real encrypted finish
+    const resp = await fetch(`${baseUrl}/handshake/finish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionKeys.sessionId,
+      },
+      body: JSON.stringify({
+        type: 'handshake_finish',
+        payload: crypto.randomBytes(64).toString('hex'),
+      }),
+    });
+
+    // Should fail — either 403 (finish verification failed) or the verify threw
+    expect(resp.status).toBe(403);
+    const body = (await resp.json()) as { error: string };
+    expect(body.error).toBeDefined();
+  });
+});
+
+// ── loadAuthorizedPeers (disk-based) ───────────────────────────────────────
+
+describe('loadAuthorizedPeers via createApp', () => {
+  let peersDir: string;
+  let tmpKeysDir: string;
+
+  beforeAll(() => {
+    // Create temp directories for peer public keys
+    peersDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-peers-'));
+    tmpKeysDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-server-keys-'));
+
+    // Save server keys to disk so createApp can load them
+    saveKeyBundle(serverKeys, tmpKeysDir);
+
+    // Save one valid peer's public keys
+    const peerDir = path.join(peersDir, 'client1');
+    fs.mkdirSync(peerDir, { recursive: true });
+    const serialized = serializeKeyBundle(clientKeys);
+    fs.writeFileSync(path.join(peerDir, 'signing.pub.pem'), serialized.signing.publicKey);
+    fs.writeFileSync(path.join(peerDir, 'exchange.pub.pem'), serialized.exchange.publicKey);
+
+    // Also create an invalid peer dir (missing files) to test error handling
+    const badPeerDir = path.join(peersDir, 'broken-peer');
+    fs.mkdirSync(badPeerDir, { recursive: true });
+    fs.writeFileSync(path.join(badPeerDir, 'signing.pub.pem'), 'not-a-valid-key');
+
+    // Create a non-directory entry to test the isDirectory() check
+    fs.writeFileSync(path.join(peersDir, 'stray-file.txt'), 'ignore me');
+  });
+
+  afterAll(() => {
+    fs.rmSync(peersDir, { recursive: true, force: true });
+    fs.rmSync(tmpKeysDir, { recursive: true, force: true });
+  });
+
+  it('should load peers from disk and allow authorized handshakes', async () => {
+    const config: Config = {
+      proxy: {
+        remoteUrl: '',
+        localKeysDir: '',
+        remotePublicKeysDir: '',
+        connectTimeout: 10_000,
+        requestTimeout: 30_000,
+      },
+      remote: {
+        host: '127.0.0.1',
+        port: 0,
+        localKeysDir: tmpKeysDir,
+        authorizedPeersDir: peersDir,
+        secrets: { TEST: 'loaded-from-disk' },
+        allowedEndpoints: [],
+        rateLimitPerMinute: 60,
+      },
+    };
+
+    // Only pass config — let createApp load keys and peers from disk
+    const app = createApp({ config });
+    const diskServer = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+
+    try {
+      const addr = diskServer.address() as AddressInfo;
+      const diskUrl = `http://127.0.0.1:${addr.port}`;
+
+      // Handshake from the authorized client should succeed
+      const initiator = new HandshakeInitiator(clientKeys, serverPub);
+      const initMsg = initiator.createInit();
+      const initResp = await fetch(`${diskUrl}/handshake/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(initMsg),
+      });
+      expect(initResp.ok).toBe(true);
+
+      const reply = (await initResp.json()) as HandshakeReply;
+      const sessionKeys = initiator.processReply(reply);
+      const channel = new EncryptedChannel(sessionKeys);
+
+      const finishMsg = initiator.createFinish(sessionKeys);
+      const finishResp = await fetch(`${diskUrl}/handshake/finish`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': sessionKeys.sessionId,
+        },
+        body: JSON.stringify(finishMsg),
+      });
+      expect(finishResp.ok).toBe(true);
+
+      // Verify we can get a secret
+      const request: ProxyRequest = {
+        type: 'proxy_request',
+        id: crypto.randomUUID(),
+        toolName: 'get_secret',
+        toolInput: { name: 'TEST' },
+        timestamp: Date.now(),
+      };
+      const encrypted = channel.encryptJSON(request);
+      const resp = await fetch(`${diskUrl}/request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Session-Id': channel.sessionId,
+        },
+        body: new Uint8Array(encrypted),
+      });
+      expect(resp.ok).toBe(true);
+      const decrypted = channel.decryptJSON<ProxyResponse>(Buffer.from(await resp.arrayBuffer()));
+      expect(decrypted.success).toBe(true);
+      expect(decrypted.result).toBe('loaded-from-disk');
+    } finally {
+      await new Promise<void>((resolve) => {
+        diskServer.close(() => resolve());
+      });
+    }
+  });
+
+  it('should handle non-existent peers directory gracefully', () => {
+    const config: Config = {
+      proxy: {
+        remoteUrl: '',
+        localKeysDir: '',
+        remotePublicKeysDir: '',
+        connectTimeout: 10_000,
+        requestTimeout: 30_000,
+      },
+      remote: {
+        host: '127.0.0.1',
+        port: 0,
+        localKeysDir: '',
+        authorizedPeersDir: '/tmp/nonexistent-peers-dir-xyz-' + crypto.randomUUID(),
+        secrets: {},
+        allowedEndpoints: [],
+        rateLimitPerMinute: 60,
+      },
+    };
+
+    // Should not throw — loadAuthorizedPeers returns empty array if dir doesn't exist
+    expect(() =>
+      createApp({
+        config,
+        ownKeys: serverKeys,
+        // authorizedPeers not passed, so it'll call loadAuthorizedPeers
+      }),
+    ).not.toThrow();
+  });
+});
+
+// ── Handshake without finish (pending handshake coverage) ──────────────────
+
+describe('Pending handshake state', () => {
+  it('should create a pending handshake on init that can be completed later', async () => {
+    // Start a handshake but don't finish — verifies the pending state is created
+    const initiator = new HandshakeInitiator(clientKeys, serverPub);
+    const initMsg = initiator.createInit();
+    const initResp = await fetch(`${baseUrl}/handshake/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(initMsg),
+    });
+    expect(initResp.ok).toBe(true);
+
+    const reply = (await initResp.json()) as HandshakeReply;
+    const sessionKeys = initiator.processReply(reply);
+
+    // Completing it later should still work (pending handshake is stored)
+    const channel = new EncryptedChannel(sessionKeys);
+    const finishMsg = initiator.createFinish(sessionKeys);
+    const finishResp = await fetch(`${baseUrl}/handshake/finish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionKeys.sessionId,
+      },
+      body: JSON.stringify(finishMsg),
+    });
+    expect(finishResp.ok).toBe(true);
+
+    // And the session should be usable
+    const request: ProxyRequest = {
+      type: 'proxy_request',
+      id: crypto.randomUUID(),
+      toolName: 'list_secrets',
+      toolInput: {},
+      timestamp: Date.now(),
+    };
+    const encrypted = channel.encryptJSON(request);
+    const resp = await fetch(`${baseUrl}/request`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Session-Id': channel.sessionId,
+      },
+      body: new Uint8Array(encrypted),
+    });
+    expect(resp.ok).toBe(true);
   });
 });

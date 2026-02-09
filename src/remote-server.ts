@@ -34,7 +34,7 @@ import {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-interface Session {
+export interface Session {
   channel: EncryptedChannel;
   createdAt: number;
   lastActivity: number;
@@ -44,7 +44,7 @@ interface Session {
   windowStart: number;
 }
 
-interface PendingHandshake {
+export interface PendingHandshake {
   responder: HandshakeResponder;
   init: HandshakeInit;
   createdAt: number;
@@ -88,9 +88,9 @@ function auditLog(sessionId: string, action: string, details: Record<string, unk
   console.log(`[audit] ${JSON.stringify(entry)}`);
 }
 
-function isEndpointAllowed(url: string): boolean {
-  if (allowedEndpoints.length === 0) return true; // no restrictions if empty
-  return allowedEndpoints.some((pattern) => {
+export function isEndpointAllowed(url: string, patterns: string[]): boolean {
+  if (patterns.length === 0) return true; // no restrictions if empty
+  return patterns.some((pattern) => {
     // Support simple glob patterns: * matches anything within a segment, ** matches across segments
     const regex = new RegExp(
       '^' +
@@ -105,7 +105,7 @@ function isEndpointAllowed(url: string): boolean {
   });
 }
 
-function resolvePlaceholders(str: string, secretsMap: Record<string, string>): string {
+export function resolvePlaceholders(str: string, secretsMap: Record<string, string>): string {
   return str.replace(/\$\{(\w+)\}/g, (match, name: string) => {
     if (name in secretsMap) return secretsMap[name];
     console.error(`[remote] Warning: placeholder ${match} not found in secrets`);
@@ -113,7 +113,10 @@ function resolvePlaceholders(str: string, secretsMap: Record<string, string>): s
   });
 }
 
-function checkRateLimit(session: Session): boolean {
+export function checkRateLimit(
+  session: Pick<Session, 'windowRequests' | 'windowStart'>,
+  limit: number,
+): boolean {
   const now = Date.now();
   const windowMs = 60_000;
 
@@ -123,29 +126,42 @@ function checkRateLimit(session: Session): boolean {
   }
 
   session.windowRequests++;
-  return session.windowRequests <= rateLimitPerMinute;
+  return session.windowRequests <= limit;
 }
 
 // ── Session cleanup ────────────────────────────────────────────────────────
 
-const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
-const HANDSHAKE_TTL = 30 * 1000; // 30 seconds
+export const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
+export const HANDSHAKE_TTL = 30 * 1000; // 30 seconds
 
-setInterval(() => {
-  const now = Date.now();
+export function cleanupSessions(
+  sessionsMap: Map<string, Pick<Session, 'lastActivity'>>,
+  pendingMap: Map<string, Pick<PendingHandshake, 'createdAt'>>,
+  now: number = Date.now(),
+): { expiredSessions: string[]; expiredHandshakes: string[] } {
+  const expiredSessions: string[] = [];
+  const expiredHandshakes: string[] = [];
 
-  for (const [id, session] of sessions) {
+  for (const [id, session] of sessionsMap) {
     if (now - session.lastActivity > SESSION_TTL) {
       auditLog(id, 'session_expired');
-      sessions.delete(id);
+      sessionsMap.delete(id);
+      expiredSessions.push(id);
     }
   }
 
-  for (const [id, hs] of pendingHandshakes) {
+  for (const [id, hs] of pendingMap) {
     if (now - hs.createdAt > HANDSHAKE_TTL) {
-      pendingHandshakes.delete(id);
+      pendingMap.delete(id);
+      expiredHandshakes.push(id);
     }
   }
+
+  return { expiredSessions, expiredHandshakes };
+}
+
+setInterval(() => {
+  cleanupSessions(sessions, pendingHandshakes);
 }, 60_000);
 
 // ── Tool handlers ──────────────────────────────────────────────────────────
@@ -172,7 +188,7 @@ const toolHandlers: Record<string, ToolHandler> = {
     }
 
     // Check endpoint allowlist
-    if (!isEndpointAllowed(resolvedUrl)) {
+    if (!isEndpointAllowed(resolvedUrl, allowedEndpoints)) {
       throw new Error(`Endpoint not allowed: ${url}`);
     }
 
@@ -356,7 +372,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     // Rate limit check
-    if (!checkRateLimit(session)) {
+    if (!checkRateLimit(session, rateLimitPerMinute)) {
       auditLog(sessionId, 'rate_limited');
       res.status(429).send('Rate limit exceeded');
       return;
