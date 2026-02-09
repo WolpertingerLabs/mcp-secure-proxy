@@ -14,7 +14,6 @@
  */
 
 import express from 'express';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -91,16 +90,16 @@ function auditLog(sessionId: string, action: string, details: Record<string, unk
 
 function isEndpointAllowed(url: string): boolean {
   if (allowedEndpoints.length === 0) return true; // no restrictions if empty
-  return allowedEndpoints.some(pattern => {
+  return allowedEndpoints.some((pattern) => {
     // Support simple glob patterns: * matches anything within a segment, ** matches across segments
     const regex = new RegExp(
       '^' +
-      pattern
-        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*/g, '.__DOUBLE_STAR__.')
-        .replace(/\*/g, '[^/]*')
-        .replace(/\.__DOUBLE_STAR__\./g, '.*') +
-      '$',
+        pattern
+          .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*\*/g, '.__DOUBLE_STAR__.')
+          .replace(/\*/g, '[^/]*')
+          .replace(/\.__DOUBLE_STAR__\./g, '.*') +
+        '$',
     );
     return regex.test(url);
   });
@@ -158,7 +157,7 @@ const toolHandlers: Record<string, ToolHandler> = {
    * Proxied HTTP request with secret injection.
    */
   async http_request(input) {
-    const { method, url, headers = {}, body } = input as {
+    const { method, url, headers, body } = input as {
       method: string;
       url: string;
       headers: Record<string, string>;
@@ -194,7 +193,7 @@ const toolHandlers: Record<string, ToolHandler> = {
       body: resolvedBody,
     });
 
-    const contentType = resp.headers.get('content-type') || '';
+    const contentType = resp.headers.get('content-type') ?? '';
     let responseBody: unknown;
 
     if (contentType.includes('application/json')) {
@@ -214,19 +213,19 @@ const toolHandlers: Record<string, ToolHandler> = {
   /**
    * Return a secret value by name.
    */
-  async get_secret(input) {
+  get_secret(input) {
     const { name } = input as { name: string };
     if (!(name in secrets)) {
       throw new Error(`Secret not found: ${name}`);
     }
-    return secrets[name];
+    return Promise.resolve(secrets[name]);
   },
 
   /**
    * List available secret names (not values).
    */
-  async list_secrets() {
-    return Object.keys(secrets);
+  list_secrets() {
+    return Promise.resolve(Object.keys(secrets));
   },
 };
 
@@ -367,6 +366,7 @@ function createApp() {
 
       // Dispatch to handler
       const handler = toolHandlers[request.toolName];
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- runtime validation for untrusted input
       if (!handler) {
         throw new Error(`Unknown tool: ${request.toolName}`);
       }
@@ -430,16 +430,20 @@ function createApp() {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+function main(): void {
   const config = loadConfig();
   const app = createApp();
 
   app.listen(config.remote.port, config.remote.host, () => {
-    console.log(`[remote] Secure remote server listening on ${config.remote.host}:${config.remote.port}`);
+    console.log(
+      `[remote] Secure remote server listening on ${config.remote.host}:${config.remote.port}`,
+    );
   });
 }
 
-main().catch((err) => {
+try {
+  main();
+} catch (err: unknown) {
   console.error('[remote] Fatal error:', err);
   process.exit(1);
-});
+}

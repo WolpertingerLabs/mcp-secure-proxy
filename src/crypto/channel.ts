@@ -67,9 +67,7 @@ export function deriveSessionKeys(
   );
 
   // Derive session ID for logging
-  const sessionIdBuf = Buffer.from(
-    crypto.hkdfSync('sha256', sharedSecret, salt, 'session-id', 16),
-  );
+  const sessionIdBuf = Buffer.from(crypto.hkdfSync('sha256', sharedSecret, salt, 'session-id', 16));
   const sessionId = sessionIdBuf.toString('hex');
 
   return {
@@ -86,12 +84,10 @@ export function deriveSessionKeys(
  * Each message includes the counter as AAD (Additional Authenticated Data).
  */
 export class EncryptedChannel {
-  private sendCounter: bigint = 0n;
-  private recvCounter: bigint = 0n;
+  private sendCounter = 0n;
+  private recvCounter = 0n;
 
-  constructor(
-    private readonly keys: SessionKeys,
-  ) {}
+  constructor(private readonly keys: SessionKeys) {}
 
   get sessionId(): string {
     return this.keys.sessionId;
@@ -117,17 +113,10 @@ export class EncryptedChannel {
     const counterBuf = Buffer.alloc(COUNTER_LENGTH);
     counterBuf.writeBigUInt64BE(counter);
 
-    const cipher = crypto.createCipheriv(
-      'aes-256-gcm',
-      this.keys.sendKey.encryptionKey,
-      iv,
-    );
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.keys.sendKey.encryptionKey, iv);
     cipher.setAAD(counterBuf);
 
-    const encrypted = Buffer.concat([
-      cipher.update(plaintext),
-      cipher.final(),
-    ]);
+    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const authTag = cipher.getAuthTag();
 
     // Pack: IV || authTag || counter || ciphertext
@@ -157,24 +146,17 @@ export class EncryptedChannel {
     if (counter !== this.recvCounter) {
       throw new Error(
         `Counter mismatch: expected ${this.recvCounter}, got ${counter}. ` +
-        'Possible replay or reordering attack.',
+          'Possible replay or reordering attack.',
       );
     }
     this.recvCounter++;
 
-    const decipher = crypto.createDecipheriv(
-      'aes-256-gcm',
-      this.keys.recvKey.encryptionKey,
-      iv,
-    );
+    const decipher = crypto.createDecipheriv('aes-256-gcm', this.keys.recvKey.encryptionKey, iv);
     decipher.setAAD(counterBuf);
     decipher.setAuthTag(authTag);
 
     try {
-      return Buffer.concat([
-        decipher.update(ciphertext),
-        decipher.final(),
-      ]);
+      return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     } catch {
       throw new Error('Decryption failed: authentication tag mismatch (tampered or wrong key)');
     }
@@ -190,6 +172,7 @@ export class EncryptedChannel {
   /**
    * Convenience: decrypt and parse a JSON object.
    */
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- T is used by callers for type narrowing of the return value
   decryptJSON<T = unknown>(packed: Buffer): T {
     const plaintext = this.decrypt(packed);
     return JSON.parse(plaintext.toString('utf-8')) as T;

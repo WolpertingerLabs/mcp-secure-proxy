@@ -100,7 +100,7 @@ export function saveConfig(config: Config): void {
 export function resolveSecrets(secretsMap: Record<string, string>): Record<string, string> {
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(secretsMap)) {
-    const envMatch = value.match(/^\$\{(.+)\}$/);
+    const envMatch = /^\$\{(.+)\}$/.exec(value);
     if (envMatch) {
       const envVal = process.env[envMatch[1]];
       if (envVal !== undefined) {

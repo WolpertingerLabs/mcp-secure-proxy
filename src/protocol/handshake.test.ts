@@ -1,14 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import {
-  HandshakeInitiator,
-  HandshakeResponder,
-  type HandshakeInit,
-} from './handshake.js';
-import {
-  generateKeyBundle,
-  extractPublicKeys,
-  EncryptedChannel,
-} from '../crypto/index.js';
+import { HandshakeInitiator, HandshakeResponder, type HandshakeInit } from './handshake.js';
+import { generateKeyBundle, extractPublicKeys, EncryptedChannel } from '../crypto/index.js';
 
 /** Helper: generate two identities and perform a full handshake */
 function performHandshake() {

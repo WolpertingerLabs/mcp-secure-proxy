@@ -5,21 +5,21 @@
  * module-scoped (not exported), we replicate their logic here for unit testing.
  * This validates the algorithms used in the remote server.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 // ── Replicated helper: isEndpointAllowed ──────────────────────────────────
 
 function isEndpointAllowed(url: string, allowedEndpoints: string[]): boolean {
   if (allowedEndpoints.length === 0) return true;
-  return allowedEndpoints.some(pattern => {
+  return allowedEndpoints.some((pattern) => {
     const regex = new RegExp(
       '^' +
-      pattern
-        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*/g, '.__DOUBLE_STAR__.')
-        .replace(/\*/g, '[^/]*')
-        .replace(/\.__DOUBLE_STAR__\./g, '.*') +
-      '$',
+        pattern
+          .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*\*/g, '.__DOUBLE_STAR__.')
+          .replace(/\*/g, '[^/]*')
+          .replace(/\.__DOUBLE_STAR__\./g, '.*') +
+        '$',
     );
     return regex.test(url);
   });
@@ -91,10 +91,7 @@ describe('isEndpointAllowed', () => {
   });
 
   it('should match against multiple patterns (OR logic)', () => {
-    const patterns = [
-      'https://api.github.com/**',
-      'https://api.stripe.com/v1/*',
-    ];
+    const patterns = ['https://api.github.com/**', 'https://api.stripe.com/v1/*'];
     expect(isEndpointAllowed('https://api.github.com/repos/foo', patterns)).toBe(true);
     expect(isEndpointAllowed('https://api.stripe.com/v1/charges', patterns)).toBe(true);
     expect(isEndpointAllowed('https://api.evil.com/hack', patterns)).toBe(false);
@@ -156,9 +153,9 @@ describe('checkRateLimit', () => {
     const session: MockSession = { windowRequests: 0, windowStart: Date.now() };
     const limit = 3;
 
-    expect(checkRateLimit(session, limit)).toBe(true);  // 1
-    expect(checkRateLimit(session, limit)).toBe(true);  // 2
-    expect(checkRateLimit(session, limit)).toBe(true);  // 3
+    expect(checkRateLimit(session, limit)).toBe(true); // 1
+    expect(checkRateLimit(session, limit)).toBe(true); // 2
+    expect(checkRateLimit(session, limit)).toBe(true); // 3
     expect(checkRateLimit(session, limit)).toBe(false); // 4 — over limit
   });
 

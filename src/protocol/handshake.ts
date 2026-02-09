@@ -77,7 +77,7 @@ export type HandshakeMessage = HandshakeInit | HandshakeReply | HandshakeFinish;
 
 function signData(privateKey: crypto.KeyObject, ...parts: (string | Buffer)[]): Buffer {
   const combined = Buffer.concat(
-    parts.map(p => typeof p === 'string' ? Buffer.from(p, 'utf-8') : p),
+    parts.map((p) => (typeof p === 'string' ? Buffer.from(p, 'utf-8') : p)),
   );
   return crypto.sign(null, combined, privateKey);
 }
@@ -88,7 +88,7 @@ function verifySignature(
   ...parts: (string | Buffer)[]
 ): boolean {
   const combined = Buffer.concat(
-    parts.map(p => typeof p === 'string' ? Buffer.from(p, 'utf-8') : p),
+    parts.map((p) => (typeof p === 'string' ? Buffer.from(p, 'utf-8') : p)),
   );
   return crypto.verify(null, combined, publicKey, signature);
 }
@@ -114,19 +114,19 @@ export class HandshakeInitiator {
    * Step 1: Create the initial handshake message.
    */
   createInit(): HandshakeInit {
-    const ephemeralPubPem = this.ephemeral.publicKey
-      .export({ type: 'spki', format: 'pem' }) as string;
+    const ephemeralPubPem = this.ephemeral.publicKey.export({
+      type: 'spki',
+      format: 'pem',
+    });
 
-    const signature = signData(
-      this.ownKeys.signing.privateKey,
-      ephemeralPubPem,
-      this.nonceI,
-    );
+    const signature = signData(this.ownKeys.signing.privateKey, ephemeralPubPem, this.nonceI);
 
     const msg: HandshakeInit = {
       type: 'handshake_init',
-      signingPubKey: this.ownKeys.signing.publicKey
-        .export({ type: 'spki', format: 'pem' }) as string,
+      signingPubKey: this.ownKeys.signing.publicKey.export({
+        type: 'spki',
+        format: 'pem',
+      }),
       ephemeralPubKey: ephemeralPubPem,
       nonceI: this.nonceI.toString('hex'),
       signature: signature.toString('hex'),
@@ -167,7 +167,8 @@ export class HandshakeInitiator {
     });
 
     // Hash the full transcript
-    const transcriptHash = crypto.createHash('sha256')
+    const transcriptHash = crypto
+      .createHash('sha256')
       .update(Buffer.concat(this.transcript))
       .digest();
 
@@ -208,8 +209,9 @@ export class HandshakeResponder {
    * Step 2: Process the init message, verify the initiator, and create a reply.
    */
   processInit(init: HandshakeInit): { reply: HandshakeReply; initiatorPubKey: PublicKeyBundle } {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- runtime validation for untrusted input regardless of static type
     if (init.version !== 1) {
-      throw new Error(`Unsupported handshake version: ${init.version}`);
+      throw new Error(`Unsupported handshake version: ${String(init.version)}`);
     }
 
     // Record in transcript
@@ -219,8 +221,8 @@ export class HandshakeResponder {
     const initiatorSigningKey = crypto.createPublicKey(init.signingPubKey);
 
     // Check if this key is authorized
-    const authorized = this.authorizedKeys.find(ak => {
-      const akPem = ak.signing.export({ type: 'spki', format: 'pem' }) as string;
+    const authorized = this.authorizedKeys.find((ak) => {
+      const akPem = ak.signing.export({ type: 'spki', format: 'pem' });
       return akPem === init.signingPubKey;
     });
 
@@ -242,8 +244,10 @@ export class HandshakeResponder {
 
     // Generate our ephemeral keypair
     this.ephemeral = crypto.generateKeyPairSync('x25519');
-    const ephemeralPubPem = this.ephemeral.publicKey
-      .export({ type: 'spki', format: 'pem' }) as string;
+    const ephemeralPubPem = this.ephemeral.publicKey.export({
+      type: 'spki',
+      format: 'pem',
+    });
     const nonceR = crypto.randomBytes(32);
 
     // Sign (ephemeralPubKey || nonceR || nonceI)
@@ -284,7 +288,8 @@ export class HandshakeResponder {
     });
 
     // Hash the full transcript
-    const transcriptHash = crypto.createHash('sha256')
+    const transcriptHash = crypto
+      .createHash('sha256')
       .update(Buffer.concat(this.transcript))
       .digest();
 

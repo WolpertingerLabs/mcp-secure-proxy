@@ -26,7 +26,6 @@ import {
   extractPublicKeys,
   fingerprint,
   loadKeyBundle,
-  serializePublicKeys,
 } from '../crypto/index.js';
 import {
   CONFIG_DIR,
@@ -34,7 +33,6 @@ import {
   LOCAL_KEYS_DIR,
   REMOTE_KEYS_DIR,
   PEER_KEYS_DIR,
-  loadConfig,
   saveConfig,
   type Config,
 } from '../config.js';
@@ -45,9 +43,9 @@ const rl = createInterface({ input: process.stdin, output: process.stdout });
 
 function ask(question: string, defaultValue?: string): Promise<string> {
   const suffix = defaultValue ? ` [${defaultValue}]` : '';
-  return new Promise(resolve => {
-    rl.question(`${question}${suffix}: `, answer => {
-      resolve(answer.trim() || defaultValue || '');
+  return new Promise((resolve) => {
+    rl.question(`${question}${suffix}: `, (answer) => {
+      resolve((answer.trim() || defaultValue) ?? '');
     });
   });
 }
@@ -204,22 +202,34 @@ function printClaudeConfig(): void {
 
   console.log('  Add this to your ~/.claude.json under mcpServers:\n');
   console.log('  For development (tsx):');
-  console.log(JSON.stringify({
-    'secure-proxy': {
-      type: 'stdio',
-      command: 'npx',
-      args: ['tsx', mcpServerPath],
-    },
-  }, null, 4));
+  console.log(
+    JSON.stringify(
+      {
+        'secure-proxy': {
+          type: 'stdio',
+          command: 'npx',
+          args: ['tsx', mcpServerPath],
+        },
+      },
+      null,
+      4,
+    ),
+  );
 
   console.log('\n  For production (compiled):');
-  console.log(JSON.stringify({
-    'secure-proxy': {
-      type: 'stdio',
-      command: 'node',
-      args: [compiledPath],
-    },
-  }, null, 4));
+  console.log(
+    JSON.stringify(
+      {
+        'secure-proxy': {
+          type: 'stdio',
+          command: 'node',
+          args: [compiledPath],
+        },
+      },
+      null,
+      4,
+    ),
+  );
 }
 
 function exchangeKeys(): void {
@@ -251,7 +261,7 @@ const command = process.argv[2] || 'init';
 
 switch (command) {
   case 'init':
-    fullInit().catch(err => {
+    fullInit().catch((err: unknown) => {
       console.error('Setup failed:', err);
       rl.close();
       process.exit(1);

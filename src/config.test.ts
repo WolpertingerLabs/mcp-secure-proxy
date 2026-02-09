@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { resolveSecrets, loadConfig, saveConfig, CONFIG_DIR, CONFIG_PATH } from './config.js';
 
 describe('resolveSecrets', () => {
@@ -45,7 +43,9 @@ describe('resolveSecrets', () => {
   it('should omit secrets where env var is not found', () => {
     delete process.env.NONEXISTENT_VAR;
 
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {
+      /* noop */
+    });
 
     const result = resolveSecrets({
       missing: '${NONEXISTENT_VAR}',
@@ -55,9 +55,7 @@ describe('resolveSecrets', () => {
     expect(result).toEqual({ present: 'literal' });
     expect(result).not.toHaveProperty('missing');
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining('NONEXISTENT_VAR'),
-    );
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('NONEXISTENT_VAR'));
 
     consoleSpy.mockRestore();
   });
@@ -142,10 +140,12 @@ describe('loadConfig', () => {
 
   it('should merge file config with defaults', () => {
     const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-    const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
-      proxy: { remoteUrl: 'https://custom.example.com:8443' },
-      remote: { port: 7777, secrets: { KEY: 'value' } },
-    }));
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue(
+      JSON.stringify({
+        proxy: { remoteUrl: 'https://custom.example.com:8443' },
+        remote: { port: 7777, secrets: { KEY: 'value' } },
+      }),
+    );
 
     const config = loadConfig();
 
@@ -164,9 +164,11 @@ describe('loadConfig', () => {
 
   it('should handle partial config (only proxy section)', () => {
     const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-    const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({
-      proxy: { connectTimeout: 5000 },
-    }));
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue(
+      JSON.stringify({
+        proxy: { connectTimeout: 5000 },
+      }),
+    );
 
     const config = loadConfig();
 
@@ -193,11 +195,7 @@ describe('saveConfig', () => {
     saveConfig(config);
 
     expect(mkdirSpy).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true, mode: 0o700 });
-    expect(writeSpy).toHaveBeenCalledWith(
-      CONFIG_PATH,
-      expect.any(String),
-      { mode: 0o600 },
-    );
+    expect(writeSpy).toHaveBeenCalledWith(CONFIG_PATH, expect.any(String), { mode: 0o600 });
 
     // Verify the written content is valid JSON
     const writtenContent = writeSpy.mock.calls[0][1] as string;

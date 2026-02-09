@@ -44,8 +44,12 @@ describe('deriveSessionKeys', () => {
     const { initiatorKeys, responderKeys } = createKeyPair();
 
     // Initiator's sendKey should equal responder's recvKey (and vice versa)
-    expect(initiatorKeys.sendKey.encryptionKey.equals(responderKeys.recvKey.encryptionKey)).toBe(true);
-    expect(initiatorKeys.recvKey.encryptionKey.equals(responderKeys.sendKey.encryptionKey)).toBe(true);
+    expect(initiatorKeys.sendKey.encryptionKey.equals(responderKeys.recvKey.encryptionKey)).toBe(
+      true,
+    );
+    expect(initiatorKeys.recvKey.encryptionKey.equals(responderKeys.sendKey.encryptionKey)).toBe(
+      true,
+    );
   });
 
   it('should produce the same sessionId for both sides', () => {
@@ -131,7 +135,7 @@ describe('EncryptedChannel', () => {
     const responder = new EncryptedChannel(responderKeys);
 
     const msg1 = initiator.encrypt(Buffer.from('first'));
-    const msg2 = initiator.encrypt(Buffer.from('second'));
+    const _msg2 = initiator.encrypt(Buffer.from('second'));
 
     // Decrypt first message
     responder.decrypt(msg1);
@@ -145,7 +149,7 @@ describe('EncryptedChannel', () => {
     const initiator = new EncryptedChannel(initiatorKeys);
     const responder = new EncryptedChannel(responderKeys);
 
-    const msg1 = initiator.encrypt(Buffer.from('first'));
+    const _msg1 = initiator.encrypt(Buffer.from('first'));
     const msg2 = initiator.encrypt(Buffer.from('second'));
 
     // Skip msg1, try msg2 directly — counter expects 0 but gets 1

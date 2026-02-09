@@ -7,16 +7,8 @@
  */
 
 import { loadConfig } from './config.js';
-import {
-  loadKeyBundle,
-  loadPublicKeys,
-  EncryptedChannel,
-} from './crypto/index.js';
-import {
-  HandshakeInitiator,
-  type ProxyRequest,
-  type ProxyResponse,
-} from './protocol/index.js';
+import { loadKeyBundle, loadPublicKeys, EncryptedChannel } from './crypto/index.js';
+import { HandshakeInitiator, type ProxyRequest, type ProxyResponse } from './protocol/index.js';
 import crypto from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
@@ -47,12 +39,12 @@ async function waitForServer(url: string, timeout = 5000): Promise<void> {
     } catch {
       // Not ready yet
     }
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error('Server did not start in time');
 }
 
-async function startServer(): Promise<void> {
+function startServer(): void {
   const serverPath = path.join(__dirname, '..', 'dist', 'remote-server.js');
   serverProcess = spawn('node', [serverPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -80,7 +72,9 @@ async function testHandshakeAndRequest(): Promise<void> {
   const initiator = new HandshakeInitiator(ownKeys, remotePub);
   const initMsg = initiator.createInit();
 
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional runtime assertion
   assert(initMsg.type === 'handshake_init', 'Init message has correct type');
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional runtime assertion
   assert(initMsg.version === 1, 'Protocol version is 1');
 
   // Send init
@@ -99,7 +93,10 @@ async function testHandshakeAndRequest(): Promise<void> {
 
   // Process reply and derive keys
   const sessionKeys = initiator.processReply(reply);
-  assert(typeof sessionKeys.sessionId === 'string', `Session ID derived: ${sessionKeys.sessionId.substring(0, 12)}...`);
+  assert(
+    typeof sessionKeys.sessionId === 'string',
+    `Session ID derived: ${sessionKeys.sessionId.substring(0, 12)}...`,
+  );
 
   const channel = new EncryptedChannel(sessionKeys);
 
@@ -145,7 +142,7 @@ async function testHandshakeAndRequest(): Promise<void> {
   const listDecrypted = channel.decryptJSON<ProxyResponse>(
     Buffer.from(await listResp.arrayBuffer()),
   );
-  assert(listDecrypted.success === true, 'list_secrets succeeded');
+  assert(listDecrypted.success, 'list_secrets succeeded');
   assert(Array.isArray(listDecrypted.result), 'Result is an array');
   const secretNames = listDecrypted.result as string[];
   assert(secretNames.includes('TEST_SECRET'), 'TEST_SECRET is listed');
@@ -171,11 +168,12 @@ async function testHandshakeAndRequest(): Promise<void> {
   });
   assert(getResp.ok, `get_secret request accepted (${getResp.status})`);
 
-  const getDecrypted = channel.decryptJSON<ProxyResponse>(
-    Buffer.from(await getResp.arrayBuffer()),
+  const getDecrypted = channel.decryptJSON<ProxyResponse>(Buffer.from(await getResp.arrayBuffer()));
+  assert(getDecrypted.success, 'get_secret succeeded');
+  assert(
+    getDecrypted.result === 'hello-from-the-vault',
+    `Secret value correct: "${String(getDecrypted.result)}"`,
   );
-  assert(getDecrypted.success === true, 'get_secret succeeded');
-  assert(getDecrypted.result === 'hello-from-the-vault', `Secret value correct: "${getDecrypted.result}"`);
 
   // Test: encrypted counter monotonicity (replay protection)
   console.log('\n── Security checks ──');
@@ -194,9 +192,12 @@ async function testHandshakeAndRequest(): Promise<void> {
     const replayData = channel.decryptJSON<ProxyResponse>(
       Buffer.from(await replayResp.arrayBuffer()),
     );
-    assert(replayData.success === false, 'Replay attack correctly rejected');
+    assert(!replayData.success, 'Replay attack correctly rejected');
   } else {
-    assert(replayResp.status === 500, `Replay attack rejected at transport level (${replayResp.status})`);
+    assert(
+      replayResp.status === 500,
+      `Replay attack rejected at transport level (${replayResp.status})`,
+    );
   }
 
   // Test: unknown session
@@ -219,7 +220,7 @@ async function main(): Promise<void> {
   console.log('╚══════════════════════════════════════════════════════════╝');
 
   console.log('\nStarting remote server...');
-  await startServer();
+  startServer();
 
   try {
     await waitForServer('http://127.0.0.1:9999');
@@ -239,7 +240,7 @@ async function main(): Promise<void> {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error('\nTest failed:', err);
   if (serverProcess) serverProcess.kill();
   process.exit(1);

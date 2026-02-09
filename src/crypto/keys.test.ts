@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import {
   generateKeyBundle,
   extractPublicKeys,
@@ -14,8 +13,6 @@ import {
   loadKeyBundle,
   loadPublicKeys,
   fingerprint,
-  type KeyBundle,
-  type PublicKeyBundle,
 } from './keys.js';
 
 describe('generateKeyBundle', () => {
@@ -32,21 +29,21 @@ describe('generateKeyBundle', () => {
 
   it('should generate Ed25519 signing keys', () => {
     const bundle = generateKeyBundle();
-    const pubExport = bundle.signing.publicKey.export({ type: 'spki', format: 'pem' }) as string;
+    const pubExport = bundle.signing.publicKey.export({ type: 'spki', format: 'pem' });
     expect(pubExport).toContain('PUBLIC KEY');
   });
 
   it('should generate X25519 exchange keys', () => {
     const bundle = generateKeyBundle();
-    const pubExport = bundle.exchange.publicKey.export({ type: 'spki', format: 'pem' }) as string;
+    const pubExport = bundle.exchange.publicKey.export({ type: 'spki', format: 'pem' });
     expect(pubExport).toContain('PUBLIC KEY');
   });
 
   it('should generate unique keys each time', () => {
     const bundle1 = generateKeyBundle();
     const bundle2 = generateKeyBundle();
-    const pem1 = bundle1.signing.publicKey.export({ type: 'spki', format: 'pem' }) as string;
-    const pem2 = bundle2.signing.publicKey.export({ type: 'spki', format: 'pem' }) as string;
+    const pem1 = bundle1.signing.publicKey.export({ type: 'spki', format: 'pem' });
+    const pem2 = bundle2.signing.publicKey.export({ type: 'spki', format: 'pem' });
     expect(pem1).not.toBe(pem2);
   });
 });

@@ -76,16 +76,12 @@ export function extractPublicKeys(bundle: KeyBundle): PublicKeyBundle {
 export function serializeKeyBundle(bundle: KeyBundle): SerializedKeyBundle {
   return {
     signing: {
-      publicKey: bundle.signing.publicKey
-        .export({ type: 'spki', format: 'pem' }) as string,
-      privateKey: bundle.signing.privateKey
-        .export({ type: 'pkcs8', format: 'pem' }) as string,
+      publicKey: bundle.signing.publicKey.export({ type: 'spki', format: 'pem' }),
+      privateKey: bundle.signing.privateKey.export({ type: 'pkcs8', format: 'pem' }),
     },
     exchange: {
-      publicKey: bundle.exchange.publicKey
-        .export({ type: 'spki', format: 'pem' }) as string,
-      privateKey: bundle.exchange.privateKey
-        .export({ type: 'pkcs8', format: 'pem' }) as string,
+      publicKey: bundle.exchange.publicKey.export({ type: 'spki', format: 'pem' }),
+      privateKey: bundle.exchange.privateKey.export({ type: 'pkcs8', format: 'pem' }),
     },
   };
 }
@@ -111,8 +107,8 @@ export function deserializeKeyBundle(data: SerializedKeyBundle): KeyBundle {
  */
 export function serializePublicKeys(pub: PublicKeyBundle): SerializedPublicKeys {
   return {
-    signing: pub.signing.export({ type: 'spki', format: 'pem' }) as string,
-    exchange: pub.exchange.export({ type: 'spki', format: 'pem' }) as string,
+    signing: pub.signing.export({ type: 'spki', format: 'pem' }),
+    exchange: pub.exchange.export({ type: 'spki', format: 'pem' }),
   };
 }
 
@@ -140,12 +136,20 @@ export function saveKeyBundle(bundle: KeyBundle, dir: string): void {
   const serialized = serializeKeyBundle(bundle);
 
   // Public keys — readable
-  fs.writeFileSync(path.join(dir, 'signing.pub.pem'), serialized.signing.publicKey, { mode: 0o644 });
-  fs.writeFileSync(path.join(dir, 'exchange.pub.pem'), serialized.exchange.publicKey, { mode: 0o644 });
+  fs.writeFileSync(path.join(dir, 'signing.pub.pem'), serialized.signing.publicKey, {
+    mode: 0o644,
+  });
+  fs.writeFileSync(path.join(dir, 'exchange.pub.pem'), serialized.exchange.publicKey, {
+    mode: 0o644,
+  });
 
   // Private keys — owner-only
-  fs.writeFileSync(path.join(dir, 'signing.key.pem'), serialized.signing.privateKey, { mode: 0o600 });
-  fs.writeFileSync(path.join(dir, 'exchange.key.pem'), serialized.exchange.privateKey, { mode: 0o600 });
+  fs.writeFileSync(path.join(dir, 'signing.key.pem'), serialized.signing.privateKey, {
+    mode: 0o600,
+  });
+  fs.writeFileSync(path.join(dir, 'exchange.key.pem'), serialized.exchange.privateKey, {
+    mode: 0o600,
+  });
 }
 
 /**
@@ -185,6 +189,6 @@ export function fingerprint(pub: PublicKeyBundle): string {
   const hash = crypto.createHash('sha256').update(combined).digest();
   // Show first 16 bytes as colon-separated hex
   return Array.from(hash.subarray(0, 16))
-    .map(b => b.toString(16).padStart(2, '0'))
+    .map((b) => b.toString(16).padStart(2, '0'))
     .join(':');
 }
