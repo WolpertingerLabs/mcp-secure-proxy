@@ -231,7 +231,17 @@ const toolHandlers: Record<string, ToolHandler> = {
 
 // ── Express app ────────────────────────────────────────────────────────────
 
-function createApp() {
+/** Options for creating the app — allows dependency injection for tests */
+export interface CreateAppOptions {
+  /** Override config instead of loading from disk */
+  config?: import('./config.js').Config;
+  /** Override key bundle instead of loading from disk */
+  ownKeys?: import('./crypto/index.js').KeyBundle;
+  /** Override authorized peers instead of loading from disk */
+  authorizedPeers?: PublicKeyBundle[];
+}
+
+export function createApp(options: CreateAppOptions = {}) {
   const app = express();
 
   // Parse JSON for handshake endpoints
@@ -240,9 +250,10 @@ function createApp() {
   // Raw buffer for encrypted request endpoint
   app.use('/request', express.raw({ type: 'application/octet-stream', limit: '10mb' }));
 
-  const config = loadConfig();
-  const ownKeys = loadKeyBundle(config.remote.localKeysDir);
-  const authorizedPeers = loadAuthorizedPeers(config.remote.authorizedPeersDir);
+  const config = options.config ?? loadConfig();
+  const ownKeys = options.ownKeys ?? loadKeyBundle(config.remote.localKeysDir);
+  const authorizedPeers =
+    options.authorizedPeers ?? loadAuthorizedPeers(config.remote.authorizedPeersDir);
 
   secrets = resolveSecrets(config.remote.secrets);
   allowedEndpoints = config.remote.allowedEndpoints;
@@ -441,9 +452,15 @@ function main(): void {
   });
 }
 
-try {
-  main();
-} catch (err: unknown) {
-  console.error('[remote] Fatal error:', err);
-  process.exit(1);
+// Only run when executed directly (not when imported by tests)
+const isDirectRun =
+  process.argv[1]?.endsWith('remote-server.ts') || process.argv[1]?.endsWith('remote-server.js');
+
+if (isDirectRun) {
+  try {
+    main();
+  } catch (err: unknown) {
+    console.error('[remote] Fatal error:', err);
+    process.exit(1);
+  }
 }
